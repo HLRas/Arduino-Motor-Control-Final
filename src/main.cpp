@@ -462,7 +462,7 @@ void printSpeeds(){
   Serial.print(",");
   Serial.print(spdL, 3); // Left speed (output)
   Serial.print(",");
-  Serial.print(desiredSpeedR,3); // Desired Speed of right motor
+  Serial.print(desR,3); // Desired Speed of right motor
   Serial.print(",");
   Serial.print(pwmR,0); // PWM Right (input)
   Serial.print(",");
