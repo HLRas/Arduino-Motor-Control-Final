@@ -17,6 +17,8 @@ void forwardL();
 void reverseL();
 void forwardR();
 void reverseR();
+void runTesterMode();
+int sign(float x);
 
 // =====================================================================//
 // Reference to where motor is, look from back to front of car
@@ -53,19 +55,21 @@ float speedR = 0; // m/s
 
 // =====================================================================//
 // Global speed requirements
-volatile float desiredSpeedL = 0.4; // m/s
-volatile float desiredSpeedR = 0.4; // m/s
+volatile float desiredSpeedL = 0; // m/s
+volatile float desiredSpeedR = 0; // m/s
+volatile int directL = 1 ; // forward
+volatile int directR = 1 ; // forward
 
 // =====================================================================//
 // System control variables
 
 // PWM inputs
-float pwmL = 70; // Start at higher value to prevent windup
-float pwmR = 70; // Start at higher value to prevent windup
+float pwmL = 80; // Start at higher value to prevent windup
+float pwmR = 80; // Start at higher value to prevent windup
 
 // PID parameters
-float KpL = 35, KiL = 0, KdL = 8;
-float KpR = 35, KiR = 0, KdR = 8;
+float KpL = 70, KiL = 0, KdL = 17;
+float KpR = 70, KiR = 0, KdR = 17;
 
 // PID variables
 float errorL = 0, errorR = 0;
@@ -79,12 +83,12 @@ volatile unsigned long dtL = 0 ; // us
 volatile unsigned long dtR = 0 ; // us
 volatile unsigned long lastMeasureL_us = 0; //us
 volatile unsigned long lastMeasureR_us = 0; //us
-unsigned long measureTimeout_us = 100000; // If no new interrupts, reset speed to 0 after this time
+unsigned long measureTimeout_us = 500000; // If no new interrupts, reset speed to 0 after this time
 
 // =====================================================================//
 // Speed measurement coeeficient
-const float radius = 0.0099; // m
-const float speed_coeff = (radius)*(M_PI/GAPS*WAIT_RISES)*(10e6);
+const float radius = 0.0325; // wheel radius [m]
+const float speed_coeff = (radius)*(2*M_PI/GAPS*WAIT_RISES)*(1e6);
                         //(radius)*(dtheta)*(u_sec/s) 
 
 // =====================================================================//
@@ -95,10 +99,14 @@ unsigned long currentTime_us = micros();
 // =====================================================================//
 // Tester variables
 bool closedLoop = true; // Should the system run the closedloop system?
-bool echoSpeeds = false; // Should the system echo the speeds to terminal?
-bool ultraEnabled = true; // Should we run ultrasonic measurements?
-bool ultraStopEnabled = true; // Should the car stop if dist < threshold?
+bool echoSpeeds = true; // Should the system echo the speeds to terminal (For tuning)
+bool ultraEnabled = false; // Should we run ultrasonic measurements?
+bool ultraStopEnabled = false; // Should the car stop if dist < threshold?
 bool commsEnabled = false; // Should the arduino send data to the Jetson?
+bool tester_mode = true; // Should the system run test mode (set speed to certain amount for a time)
+  unsigned long tester_start = 0 ;
+  unsigned long timings[] = {5000, 6000, 7000, 8000, 9000}; // Run corresponding speed UP TO this time
+  float speeds[][2] = {{0.1, 0.1},{0.15,0.1},{0.2,0.1},{0.15,0.15},{0.1,0.2}};
 // =====================================================================//
 // Ultrasonic measurements
 float ultraDist[4] = {100,100,100,100}; // Distances in meters
@@ -122,12 +130,21 @@ void setup(){
   pinSetup();
 
   stopMotors(); // Turn off motors - Initial state
-  adjustDirection(); // Sets the motors in correct direction
-  applyPWMs(); // Apply specified pwm signals with constraints
 
   if (echoSpeeds){
     runMeasureComms();
   }
+
+  if (tester_mode){ // first move forwards
+    desiredSpeedL = 0.2;
+    desiredSpeedR = 0.2;
+    directL = 1;
+    directR = 1;
+    tester_start = millis();
+  }
+
+  applyPWMs(); // Apply specified pwm signals with constraints
+  
 }
 
 // =====================================================================// 
@@ -138,27 +155,27 @@ void loop(){
   static float dt_s = 0;
   static unsigned long prevTime_ms = 0;
   currentTime_ms = millis();
+  static unsigned long ultraPrev_us = 0;
+
+  if (tester_mode){
+    runTesterMode();
+  }
+
+  adjustDirection(); // Sets the motors in correct direction
 
   if (commsEnabled){ // Run communication to Jetson
     runComms();
   }
 
-  if (ultraEnabled){ // Run ultrasonic sensors
+  currentTime_us = micros();
+  if ((ultraEnabled)&&(currentTime_us - ultraPrev_us > 10000)){ // Run ultrasonic sensors only in 10ms intervals
+    ultraPrev_us = currentTime_us;
     runUltras();
   }
 
   if (!ultraStop){
     if (closedLoop){
-      currentTime_us = micros();
-      if (currentTime_us - lastMeasureL_us > measureTimeout_us){
-        dtL = 0; // speed calc handles 0 dt as 0 speed
-        speedL = 0;
-      }
-      if (currentTime_us - lastMeasureR_us > measureTimeout_us){
-        dtR = 0;
-        speedR = 0;
-      }
-
+      
       dt_ms = currentTime_ms - prevTime_ms ; // Update elapsed time
       if (dt_ms > TS){ // if elapsed time > sampling time
 
@@ -166,6 +183,17 @@ void loop(){
         dt_s = dt_ms / 1000.0; 
 
         calcSpeeds(); // Update speeds
+
+        currentTime_us = micros();
+
+        if (currentTime_us - lastMeasureL_us > measureTimeout_us){
+          //dtL = 0; // speed calc handles 0 dt as 0 speed
+          speedL = 0;
+        }
+        if (currentTime_us - lastMeasureR_us > measureTimeout_us){
+          //dtR = 0;
+          speedR = 0;
+        }
 
         PID(dt_s); // Run PID controller  
 
@@ -183,6 +211,71 @@ void loop(){
     printSpeeds();
   }
   
+}
+
+// =====================================================================// 
+// Tester mode function
+// =====================================================================// 
+void runTesterMode(){
+  static unsigned long time_passed;
+  time_passed = millis() - tester_start;
+  
+  for (unsigned int i = 0; i<sizeof(timings)/sizeof(timings[0]); i++) {
+    if (time_passed < timings[i]) {
+      desiredSpeedL = abs(speeds[i][0]);
+      desiredSpeedR = abs(speeds[i][1]);
+      directL = sign(speeds[i][0]);
+      directR = sign(speeds[i][1]);
+      break;
+    }
+  }
+  if (time_passed > timings[sizeof(timings)/sizeof(timings[0])-1]){
+    desiredSpeedL = 0;
+    desiredSpeedR = 0;
+    directL = 1;
+    directR = 1;
+  }
+
+  // Set target speeds based on time
+  /*if (time_passed < 1000){ // forwards
+    desiredSpeedL = 0.2;
+    desiredSpeedR = 0.2;
+    directL = 1;
+    directR = 1;
+  }
+  else if (time_passed < 0000){ // first command
+    desiredSpeedL = 0.2;
+    desiredSpeedR = 0.1;
+    directL = 1;
+    directR = 1;
+  }
+  else if (time_passed < 0000){ // second command
+    desiredSpeedL = 0.1;
+    desiredSpeedR = 0.2;
+    directL = 1;
+    directR = 1;
+  }
+  else if (time_passed < 0000){ // third command
+    desiredSpeedL = 0.2;
+    desiredSpeedR = 0.2;
+    directL = 1;
+    directR = 1;
+  }
+  else{ // stop
+    desiredSpeedL = 0;
+    desiredSpeedR = 0;
+    directL = 1;
+    directR = 1;
+  }*/
+}
+
+// =====================================================================// 
+// Sign function
+// =====================================================================//
+int sign(float x){
+  if (x < 0) return 0;
+  if (x >= 0) return 1;
+  return 1;
 }
 
 // =====================================================================// 
@@ -250,7 +343,7 @@ void runMeasureComms(){
 // =====================================================================// 
 // Pin setup
 // =====================================================================// 
-void runUltras(){
+/*void runUltras(){
   static int duration = 0;
 
   for (int i = 0; i<4; i++){
@@ -286,8 +379,42 @@ void runUltras(){
     ultraStop += ultraStops[j];
   }
 
-}
+}*/
+void runUltras(){
+  static int duration = 0;
+  static int i = 0;
 
+  if (i!=3){i++;}else{i = 0;}
+
+  digitalWrite(trigUltraPin, LOW);
+  delayMicroseconds(5);
+  digitalWrite(trigUltraPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigUltraPin, LOW);
+
+  //pinMode(echoUltraPin[i], INPUT);
+  duration = pulseIn(echoUltraPin[i], HIGH);
+  
+  // Convert the time into a distance
+  ultraDist[i] = (duration/2) / 29.1;
+
+  // Stop car if needed and allowed
+  if (ultraStopEnabled){
+    if (ultraDist[i] < stopThres[i]){
+      ultraStops[i] = 1;
+    }else{
+      ultraStops[i] = 0;
+    }
+  }else{
+    ultraStop = 0;
+  }
+
+  ultraStop = 0;
+  for (int j = 0; j < 4; j++){
+    ultraStop += ultraStops[j];
+  }
+
+}
 // =====================================================================// 
 // Pin setup
 // =====================================================================// 
@@ -322,20 +449,24 @@ void printSpeeds(){
 
   currentTime_ms = millis();
   float elapsed_time = (currentTime_ms - startTime_ms) / 1000.0;
+  float spdR = directR ? speedR : -speedR;
+  float spdL = directL ? speedL : -speedL;
+  float desL = directL ? desiredSpeedL : -desiredSpeedL;
+  float desR = directR ? desiredSpeedR : -desiredSpeedR;
   
   Serial.print(elapsed_time, 3); // Time (s)
   Serial.print(",");
-  Serial.print(desiredSpeedL,3); // Desired Speed of left motor
+  Serial.print(desL,3); // Desired Speed of left motor
   Serial.print(",");
   Serial.print(pwmL,0); // PWM Left (input)
   Serial.print(",");
-  Serial.print(speedL, 3); // Left speed (output)
+  Serial.print(spdL, 3); // Left speed (output)
   Serial.print(",");
   Serial.print(desiredSpeedR,3); // Desired Speed of right motor
   Serial.print(",");
   Serial.print(pwmR,0); // PWM Right (input)
   Serial.print(",");
-  Serial.println(speedR, 3); // Right speed (output)
+  Serial.println(spdR, 3); // Right speed (output)
   
 }
 
@@ -358,10 +489,14 @@ void runComms(){
   if (Serial.available() > 0) {
       
       String msg = Serial.readStringUntil('\n');
-      Serial.print("got message: ");
+      Serial.print("Received Speeds: ");
       Serial.print(msg);
       Serial.print(" at: ");
-      Serial.println(millis());
+      Serial.print(millis()/1000.0);
+      Serial.print("Current Speed: ");
+      Serial.print(speedL);
+      Serial.print("|");
+      Serial.println(speedR);
       msg.trim(); // Remove any whitespace/newline characters
       
       // Find the comma delimiter
@@ -430,8 +565,8 @@ void riseR(){ // ISR call for right wheel
 // Change motor direction according to desired speed
 // =====================================================================//
 void adjustDirection(){ 
-    if (desiredSpeedL < 0){reverseL();} else {forwardL();};
-    if (desiredSpeedR < 0){reverseR();} else {forwardR();};
+    if (directL == 0){reverseL();} else {forwardL();};
+    if (directR == 0){reverseR();} else {forwardR();};
 }
 // =====================================================================// 
 // Turn off motor
