@@ -99,14 +99,14 @@ unsigned long currentTime_us = micros();
 // =====================================================================//
 // Tester variables
 bool closedLoop = true; // Should the system run the closedloop system?
-bool echoSpeeds = true; // Should the system echo the speeds to terminal (For tuning)
+bool echoSpeeds = false; // Should the system echo the speeds to terminal (For tuning)
 bool ultraEnabled = false; // Should we run ultrasonic measurements?
 bool ultraStopEnabled = false; // Should the car stop if dist < threshold?
-bool commsEnabled = false; // Should the arduino send data to the Jetson?
-bool tester_mode = true; // Should the system run test mode (set speed to certain amount for a time)
+bool commsEnabled = true; // Should the arduino send data to the Jetson?
+bool tester_mode = false; // Should the system run test mode (set speed to certain amount for a time)
   unsigned long tester_start = 0 ;
-  unsigned long timings[] = {5000, 6000, 7000, 8000, 9000}; // Run corresponding speed UP TO this time
-  float speeds[][2] = {{0.1, 0.1},{0.15,0.1},{0.2,0.1},{0.15,0.15},{0.1,0.2}};
+  unsigned long timings[] = {628}; // Run corresponding speed UP TO this time
+  float speeds[][2] = {{0.05, -0.05}};
 // =====================================================================//
 // Ultrasonic measurements
 float ultraDist[4] = {100,100,100,100}; // Distances in meters
