@@ -19,6 +19,7 @@ void forwardR();
 void reverseR();
 void runTesterMode();
 int sign(float x);
+float scaling_tank(float x);
 
 // =====================================================================//
 // Reference to where motor is, look from back to front of car
@@ -44,7 +45,7 @@ const uint8_t echoUltraPin[4] = {15,16,17,18} ;// Front, Right, Back, Left
 // Constants for measuring speed
 #define GAPS 30.0 // Amount of slots on encoder wheel
 float TS = 40.0; // System sampling time (ms)
-#define MIN_PWM 40 // Helps reduce integral windup
+#define MIN_PWM 0 
 #define MAX_PWM 255 // Max allowed pwm
 #define WAIT_RISES 1 // # rising edges until new speed can be measured (excluding first) 
 
@@ -57,6 +58,8 @@ float speedR = 0; // m/s
 // Global speed requirements
 volatile float desiredSpeedL = 0; // m/s
 volatile float desiredSpeedR = 0; // m/s
+float prevDesL = 0;
+float prevDesR = 0;
 volatile int directL = 1 ; // forward
 volatile int directR = 1 ; // forward
 
@@ -64,8 +67,8 @@ volatile int directR = 1 ; // forward
 // System control variables
 
 // PWM inputs
-float pwmL = 80; // Start at higher value to prevent windup
-float pwmR = 80; // Start at higher value to prevent windup
+float pwmL = 70; // Start at higher value to prevent windup
+float pwmR = 70; // Start at higher value to prevent windup
 
 // PID parameters
 float KpL = 70, KiL = 0, KdL = 17;
@@ -105,8 +108,11 @@ bool ultraStopEnabled = false; // Should the car stop if dist < threshold?
 bool commsEnabled = true; // Should the arduino send data to the Jetson?
 bool tester_mode = false; // Should the system run test mode (set speed to certain amount for a time)
   unsigned long tester_start = 0 ;
-  unsigned long timings[] = {628}; // Run corresponding speed UP TO this time
-  float speeds[][2] = {{0.05, -0.05}};
+  float deg = 45;
+  float scaled = scaling_tank(deg);
+  unsigned long turntime = 0.6*M_PI/180 * (scaled) * 1000;
+  unsigned long timings[] = {6000}; // Run corresponding speed UP TO this time
+  float speeds[][2] = {{0.2, 0.2}};
 // =====================================================================//
 // Ultrasonic measurements
 float ultraDist[4] = {100,100,100,100}; // Distances in meters
@@ -135,13 +141,8 @@ void setup(){
     runMeasureComms();
   }
 
-  if (tester_mode){ // first move forwards
-    desiredSpeedL = 0.2;
-    desiredSpeedR = 0.2;
-    directL = 1;
-    directR = 1;
-    tester_start = millis();
-  }
+  prevDesL = desiredSpeedL;
+  prevDesR = desiredSpeedR;
 
   applyPWMs(); // Apply specified pwm signals with constraints
   
@@ -157,6 +158,10 @@ void loop(){
   currentTime_ms = millis();
   static unsigned long ultraPrev_us = 0;
 
+  if (tester_start == 0){
+    tester_start = millis();
+  }
+
   if (tester_mode){
     runTesterMode();
   }
@@ -166,7 +171,14 @@ void loop(){
   if (commsEnabled){ // Run communication to Jetson
     runComms();
   }
-
+  
+  if ((prevDesL == 0) && (desiredSpeedL != 0)){
+    pwmL = 70;
+  }
+  if ((prevDesR == 0) && (desiredSpeedR != 0)){
+    pwmR = 70;
+  }
+  
   currentTime_us = micros();
   if ((ultraEnabled)&&(currentTime_us - ultraPrev_us > 10000)){ // Run ultrasonic sensors only in 10ms intervals
     ultraPrev_us = currentTime_us;
@@ -210,7 +222,9 @@ void loop(){
   if (echoSpeeds){
     printSpeeds();
   }
-  
+
+  prevDesL = desiredSpeedL;
+  prevDesR = desiredSpeedR;
 }
 
 // =====================================================================// 
@@ -276,6 +290,21 @@ int sign(float x){
   if (x < 0) return 0;
   if (x >= 0) return 1;
   return 1;
+}
+
+// =====================================================================// 
+// Tank scaling function
+// =====================================================================//
+float scaling_tank(float x){
+  
+  float polynomial = -4.32307692308e-7 * pow(x, 5) + 
+                     6.22319347319e-5 * pow(x, 4) - 
+                     0.00346042540793 * pow(x, 3) + 
+                     0.0931500291375 * pow(x, 2) - 
+                     1.2352733683 * x + 
+                     7.73791666667;
+  
+  return polynomial * x;
 }
 
 // =====================================================================// 
@@ -448,7 +477,7 @@ void printSpeeds(){
   }
 
   currentTime_ms = millis();
-  float elapsed_time = (currentTime_ms - startTime_ms) / 1000.0;
+  float elapsed_time = (currentTime_ms - tester_start) / 1000.0;
   float spdR = directR ? speedR : -speedR;
   float spdL = directL ? speedL : -speedL;
   float desL = directL ? desiredSpeedL : -desiredSpeedL;
@@ -489,16 +518,7 @@ void runComms(){
   if (Serial.available() > 0) {
       
       String msg = Serial.readStringUntil('\n');
-      Serial.print("Received Speeds: ");
-      Serial.print(msg);
-      Serial.print(" at: ");
-      Serial.print(millis()/1000.0);
-      Serial.print("Current Speed: ");
-      Serial.print(speedL);
-      Serial.print("|");
-      Serial.println(speedR);
       msg.trim(); // Remove any whitespace/newline characters
-      
       // Find the comma delimiter
       int commaIndex = msg.indexOf(',');
       
@@ -509,8 +529,26 @@ void runComms(){
         
         // Convert to float and assign to desired speeds
         desiredSpeedL = leftSpeedStr.toFloat();
+        if (desiredSpeedL < 0){directL = 0;} else {directL = 1;};
         desiredSpeedR = rightSpeedStr.toFloat();
+        if (desiredSpeedR < 0){directR = 0;} else {directR = 1;};
       }
+
+      Serial.print("Received Speeds: ");
+      Serial.print(desiredSpeedL);
+      Serial.print(", ");
+      Serial.print(desiredSpeedR);
+      Serial.print(" at: ");
+      Serial.print(millis()/1000.0);
+      Serial.print(" Current Speed: ");
+      Serial.print(speedL);
+      Serial.print("|");
+      Serial.print(speedR);
+      Serial.print(" PWMs: ");
+      Serial.print(pwmL);
+      Serial.print(", ");
+      Serial.print(pwmR);
+      
     }
 }
 
