@@ -119,6 +119,13 @@ float ultraDist[4] = {100,100,100,100}; // Distances in meters
 float stopThres[4] = {20,10,10,10}; // cm
 float ultraStops[4] = {0, 0 ,0 ,0}; // Flag which will stop the motor if too close
 float ultraStop = 0;
+// =====================================================================//
+// Final adjustments
+int start_final = 0;
+int clockwise;
+float tanktime;
+float straighttime;
+float time_passed_final = 0;
 // =====================================================================// 
 // Main setup
 // =====================================================================//           
@@ -166,6 +173,36 @@ void loop(){
     runTesterMode();
   }
 
+  if (start_final){
+    if (desiredSpeedL != 0.1 || desiredSpeedR != 0.1){
+      desiredSpeedL = 0.1;
+      desiredSpeedR = 0.1;
+    }
+    time_passed_final = (millis() - start_final)/1000.0;
+    if (time_passed_final < tanktime){
+      // Tank turn phase
+      if (clockwise){directL = 1; directR = 0;}else{directL = 0; directR = 1;}
+    }
+    else if (time_passed_final < tanktime+1){
+      // 1-second pause after tank turn
+      desiredSpeedL = 0;
+      desiredSpeedR = 0;
+    }
+    else if (time_passed_final < tanktime+1+straighttime){
+      // Straight movement phase  
+      desiredSpeedL = 0.1;
+      desiredSpeedR = 0.1;
+      directL = 1;
+      directR = 1;
+    }
+    else{
+      // End sequence
+      desiredSpeedL = 0;
+      desiredSpeedR = 0;
+      start_final = 0;
+    }
+  }
+
   adjustDirection(); // Sets the motors in correct direction
 
   if (commsEnabled){ // Run communication to Jetson
@@ -173,10 +210,10 @@ void loop(){
   }
   
   if ((prevDesL == 0) && (desiredSpeedL != 0)){
-    pwmL = 70;
+    pwmL = 30;
   }
   if ((prevDesR == 0) && (desiredSpeedR != 0)){
-    pwmR = 70;
+    pwmR = 30;
   }
   
   currentTime_us = micros();
@@ -519,36 +556,51 @@ void runComms(){
       
       String msg = Serial.readStringUntil('\n');
       msg.trim(); // Remove any whitespace/newline characters
-      // Find the comma delimiter
-      int commaIndex = msg.indexOf(',');
       
-      if (commaIndex > 0) {
-        // Split the message into two parts
-        String leftSpeedStr = msg.substring(0, commaIndex);
-        String rightSpeedStr = msg.substring(commaIndex + 1);
+      // Find the comma delimiters
+      int firstComma = msg.indexOf(',');
+      int secondComma = msg.indexOf(',', firstComma + 1);
+      
+      if (firstComma > 0 && secondComma > firstComma) {
+        // Split the message into three parts
+        String num1Str = msg.substring(0, firstComma);
+        String num2Str = msg.substring(firstComma + 1, secondComma);
+        String flagStr = msg.substring(secondComma + 1);
         
-        // Convert to float and assign to desired speeds
-        desiredSpeedL = leftSpeedStr.toFloat();
-        if (desiredSpeedL < 0){directL = 0;} else {directL = 1;};
-        desiredSpeedR = rightSpeedStr.toFloat();
-        if (desiredSpeedR < 0){directR = 0;} else {directR = 1;};
-      }
+        // Convert to values
+        float num1 = num1Str.toFloat();
+        float num2 = num2Str.toFloat();
+        int flag = flagStr.toInt();
+        
+        // Assign to desired speeds if flag == 1, else tank turn sequence
+        if (flag){
+          desiredSpeedL = num1;
+          if (desiredSpeedL < 0){directL = 0;} else {directL = 1;};
+          desiredSpeedR = num2;
+          if (desiredSpeedR < 0){directR = 0;} else {directR = 1;};
 
-      Serial.print("Received Speeds: ");
-      Serial.print(desiredSpeedL);
-      Serial.print(", ");
-      Serial.print(desiredSpeedR);
-      Serial.print(" at: ");
-      Serial.print(millis()/1000.0);
-      Serial.print(" Current Speed: ");
-      Serial.print(speedL);
-      Serial.print("|");
-      Serial.print(speedR);
-      Serial.print(" PWMs: ");
-      Serial.print(pwmL);
-      Serial.print(", ");
-      Serial.print(pwmR);
-      
+          Serial.print("Received Speeds: ");
+          Serial.print(desiredSpeedL);
+          Serial.print(", ");
+          Serial.print(desiredSpeedR);
+          Serial.print(" at: ");
+          Serial.print(millis()/1000.0);
+          Serial.print(" Current Speed: ");
+          Serial.print(speedL);
+          Serial.print("|");
+          Serial.print(speedR);
+          Serial.print(" PWMs: ");
+          Serial.print(pwmL);
+          Serial.print(", ");
+          Serial.print(pwmR);
+        }else{ // otherwise run final adjustments
+          start_final = millis();
+          tanktime = abs(num1);
+          if (num1 > 0){clockwise = 1;}else{clockwise = 0;}
+          straighttime = num2;
+        }
+        
+      }
     }
 }
 
